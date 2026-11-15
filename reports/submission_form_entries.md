@@ -16,7 +16,7 @@
 ### Section 2: Code & Repository Versioning
 * **GitHub Repository URL:** `https://github.com/Parvinder10/pulse-hospital-no-show-prediction`
 * **Primary Git Branch:** `main`
-* **Final Commit ID:** *(Extracted directly from git log upon final push)*
+* **Final Commit ID:** `30d8bfc205f4c98e43d381a33a6b7574bab6d9e4` (`30d8bfc`)
 * **Repository Access:** Public (open to assessment reviewers)
 
 ---
