@@ -26,20 +26,9 @@ class AppointmentOperationsSimulator:
         self.model = joblib.load(model_path)
         self.feature_columns = ALL_MODEL_FEATURES
         
-    def simulate_batch(self, batch_df: pd.DataFrame, daily_capacity: int = 50, cost_per_noshow: float = 100.0, cost_per_call: float = 5.0) -> dict:
+    def simulate_batch(self, batch_df: pd.DataFrame, daily_capacity: int = 50, cost_per_noshow: float = 100.0, cost_per_call: float = 5.0, phone_recovery_rate: float = 0.30) -> dict:
         """
         Runs operational review simulation for a batch of scheduled appointments.
-        
-        Parameters:
-        -----------
-        batch_df: pd.DataFrame containing appointment records with ALL_MODEL_FEATURES.
-        daily_capacity: int, max number of appointments staff can review/call.
-        cost_per_noshow: float, clinic revenue lost per unannounced empty slot (default $100).
-        cost_per_call: float, administrative cost per outbound human review call (default $5).
-        
-        Returns:
-        --------
-        dict containing ranked dataframe, selected records, unflagged records, and performance metrics.
         """
         df = batch_df.copy()
         
@@ -53,7 +42,6 @@ class AppointmentOperationsSimulator:
         df['predicted_risk'] = self.model.predict_proba(X)[:, 1]
         
         # Risk Tiers for staff guidance
-        # High: >= 0.40, Medium: 0.20 - 0.40, Low: < 0.20
         df['risk_tier'] = pd.cut(
             df['predicted_risk'],
             bins=[-0.01, 0.20, 0.40, 1.0],
@@ -77,10 +65,11 @@ class AppointmentOperationsSimulator:
         
         # Apply capacity constraint K
         k = min(daily_capacity, len(df_ranked))
+        df_ranked['selected_for_review'] = df_ranked['rank'] <= k
+        
         selected_for_review = df_ranked.iloc[:k].copy()
         remaining_appointments = df_ranked.iloc[k:].copy()
         
-        # Calculate operational metrics
         total_appointments = len(df_ranked)
         has_ground_truth = 'target' in df_ranked.columns
         
@@ -94,33 +83,56 @@ class AppointmentOperationsSimulator:
         }
         
         if has_ground_truth:
+            # Human-readable labels for audit display
+            df_ranked['actual_status'] = np.where(df_ranked['target'] == 1, "Missed (No-Show)", "Attended")
+            df_ranked['review_outcome'] = np.where(
+                df_ranked['selected_for_review'],
+                np.where(df_ranked['target'] == 1, "🎯 Caught No-Show (TP)", "⚠️ Outreach to Attendee (FP)"),
+                np.where(df_ranked['target'] == 1, "❌ Missed No-Show (FN)", "✅ Normal Attendance (TN)")
+            )
+            
+            selected_for_review = df_ranked.iloc[:k].copy()
+            remaining_appointments = df_ranked.iloc[k:].copy()
+            
             total_actual_noshows = int(df_ranked['target'].sum())
+            total_actual_attended = total_appointments - total_actual_noshows
             base_rate = total_actual_noshows / total_appointments if total_appointments > 0 else 0.0
             
             captured_noshows = int(selected_for_review['target'].sum())
+            missed_noshows = total_actual_noshows - captured_noshows
+            contacted_attendees = k - captured_noshows
+            uncontacted_attendees = total_actual_attended - contacted_attendees
+            
             capture_rate = (captured_noshows / total_actual_noshows * 100) if total_actual_noshows > 0 else 0.0
             precision_in_k = (captured_noshows / k * 100) if k > 0 else 0.0
             lift = (precision_in_k / (base_rate * 100)) if base_rate > 0 else 1.0
             
-            # Simulated Financial Impact
-            # Baseline cost with 0 calls = all no-shows are missed
+            # Financial Impact Modeling
+            # Baseline: all no-shows are missed with 0 intervention
             cost_baseline = total_actual_noshows * cost_per_noshow
-            # With staff outreach:
-            # Assume human phone call recovers 30% of contacted no-shows (patient confirms or reschedules early)
-            recovery_rate = 0.30
-            recovered_noshows = captured_noshows * recovery_rate
-            cost_with_simulation = (total_actual_noshows - recovered_noshows) * cost_per_noshow + (k * cost_per_call)
+            # Proactive outreach:
+            # Contacted patients who are no-shows: assumed percentage recover (patient confirms or reschedules early)
+            recovered_slots = captured_noshows * phone_recovery_rate
+            labor_cost = k * cost_per_call
+            unrecovered_cost = (total_actual_noshows - recovered_slots) * cost_per_noshow
+            cost_with_simulation = unrecovered_cost + labor_cost
             net_savings = cost_baseline - cost_with_simulation
             
             metrics.update({
                 "total_actual_noshows": total_actual_noshows,
+                "total_actual_attended": total_actual_attended,
                 "base_noshow_rate_pct": round(base_rate * 100, 2),
                 "captured_noshows_in_top_k": captured_noshows,
+                "uncontacted_noshows_outside_k": missed_noshows,
+                "contacted_attendees": contacted_attendees,
+                "uncontacted_attendees": uncontacted_attendees,
                 "capture_rate_pct": round(capture_rate, 2),
                 "precision_in_top_k_pct": round(precision_in_k, 2),
                 "lift_over_random": round(lift, 2),
+                "recovered_slots_count": round(recovered_slots, 1),
                 "estimated_net_savings_usd": round(net_savings, 2),
-                "assumed_phone_recovery_rate_pct": round(recovery_rate * 100, 1)
+                "labor_cost_usd": round(labor_cost, 2),
+                "assumed_phone_recovery_rate_pct": round(phone_recovery_rate * 100, 1)
             })
             
         return {
@@ -131,11 +143,5 @@ class AppointmentOperationsSimulator:
         }
 
 if __name__ == "__main__":
-    test_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "processed", "test.csv")
-    if os.path.exists(test_path):
-        df_test = pd.read_csv(test_path).head(200)  # Simulate a daily schedule batch of 200 appointments
-        sim = AppointmentOperationsSimulator()
-        res = sim.simulate_batch(df_test, daily_capacity=40)
-        print("\n--- SIMULATION BENCHMARK (Batch of 200, Capacity = 40) ---")
-        for k, v in res['metrics'].items():
-            print(f"  {k}: {v}")
+    sim = AppointmentOperationsSimulator()
+    print("Simulator ready.")

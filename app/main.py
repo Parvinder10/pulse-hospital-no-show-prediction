@@ -34,14 +34,23 @@ DATA_DIR = os.path.join(BASE_DIR, "data", "processed")
 FIGURES_DIR = os.path.join(BASE_DIR, "reports", "figures")
 METRICS_PATH = os.path.join(ARTIFACTS_DIR, "evaluation_metrics.json")
 METADATA_PATH = os.path.join(ARTIFACTS_DIR, "model_metadata.json")
-TEST_DATA_PATH = os.path.join(DATA_DIR, "test.csv")
 TRAIN_DATA_PATH = os.path.join(DATA_DIR, "train.csv")
+TEST_DATA_PATH = os.path.join(DATA_DIR, "test.csv")
+VAL_DATA_PATH = os.path.join(DATA_DIR, "val.csv")
 
 @st.cache_resource
 def load_core_systems():
     explainer = ModelExplainer()
     simulator = AppointmentOperationsSimulator()
     studio = ThresholdTradeoffStudio()
+    
+    # Load all models for comparative exploration
+    models = {
+        'HistGradientBoosting (Champion)': joblib.load(os.path.join(ARTIFACTS_DIR, 'hgb_model.joblib')),
+        'Random Forest': joblib.load(os.path.join(ARTIFACTS_DIR, 'rf_model.joblib')),
+        'Logistic Regression': joblib.load(os.path.join(ARTIFACTS_DIR, 'logistic_model.joblib')),
+        'Baseline (Prior)': joblib.load(os.path.join(ARTIFACTS_DIR, 'baseline_model.joblib'))
+    }
     
     metrics = {}
     if os.path.exists(METRICS_PATH):
@@ -53,16 +62,17 @@ def load_core_systems():
         with open(METADATA_PATH, 'r', encoding='utf-8') as f:
             metadata = json.load(f)
             
-    return explainer, simulator, studio, metrics, metadata
+    return explainer, simulator, studio, models, metrics, metadata
 
 @st.cache_data
-def load_sample_test_batch(n: int = 250):
-    if os.path.exists(TEST_DATA_PATH):
-        df = pd.read_csv(TEST_DATA_PATH)
-        return df.head(n)
-    return pd.DataFrame()
+def load_datasets():
+    df_train = pd.read_csv(TRAIN_DATA_PATH) if os.path.exists(TRAIN_DATA_PATH) else pd.DataFrame()
+    df_test = pd.read_csv(TEST_DATA_PATH) if os.path.exists(TEST_DATA_PATH) else pd.DataFrame()
+    hoods = sorted(df_train['neighbourhood'].dropna().unique()) if not df_train.empty else ["JARDIM DA PENHA", "CENTRO"]
+    return df_train, df_test, hoods
 
-explainer, simulator, studio, metrics, metadata = load_core_systems()
+explainer, simulator, studio, models, metrics, metadata = load_core_systems()
+df_train, df_test, all_neighbourhoods = load_datasets()
 
 # Sidebar Navigation
 st.sidebar.image("https://img.icons8.com/fluency/96/hospital.png", width=64)
@@ -84,9 +94,9 @@ menu = st.sidebar.radio(
 
 st.sidebar.markdown("---")
 st.sidebar.info(
-    "**Operational Boundary Guarantee:**\n"
+    "**Operational Safety Boundary:**\n"
     "• Supports staff reminder prioritization only.\n"
-    "• Never cancels care or triages patients.\n"
+    "• Strictly non-clinical; never denies care.\n"
     "• Prediction Point: Booking Registration."
 )
 
@@ -99,15 +109,21 @@ if menu == "1. Executive Overview & Governance":
     
     st.markdown("""
     ### Business & Operational Mission
-    Unannounced patient no-shows waste high-value clinical facilities, leave physician hours idle, and elongate waitlists for patients requiring urgent consultations.
+    Unannounced patient missed appointments ("no-shows") waste high-value clinical facilities, leave physician hours idle, and elongate waitlists for patients requiring urgent consultations.
     
     **PULSE** (*Predict risk. Plan responsibly.*) equips hospital administrative teams with calibrated, point-in-time predictive probabilities of appointment no-shows. By forecasting risk at the exact moment of appointment registration, coordinators can proactively target human telephone confirmation and configure overbooking buffers.
     """)
     
+    # Real metrics extracted from saved evaluation artifacts
+    train_n = metadata.get("train_samples", len(df_train))
+    test_n = metrics.get("test_samples", len(df_test))
+    hgb_test = metrics.get("test_model_comparison", {}).get("HistGradientBoosting", {})
+    champ_roc = hgb_test.get("roc_auc", 0.7827)
+    
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Historical Training Records", "77,364", "Chronological Split")
-    col2.metric("Untouched Future Test Set", "16,579", "Zero Data Leakage")
-    col3.metric("Champion Test ROC-AUC", "0.783", "HistGradientBoosting")
+    col1.metric("Historical Training Records", f"{train_n:,}", "Chronological Split")
+    col2.metric("Untouched Future Test Set", f"{test_n:,}", "Zero Data Leakage")
+    col3.metric("Champion Test ROC-AUC", f"{champ_roc:.4f}", "HistGradientBoosting")
     col4.metric("Operational Lift in Top 20%", "2.27x", "Over Random Outreach")
     
     st.markdown("---")
@@ -119,26 +135,31 @@ if menu == "1. Executive Overview & Governance":
     4. **Booking-Time Integrity:** All input features are mathematically verified as known at or before appointment scheduling (`ScheduledDay`).
     """)
     
-    st.markdown("### System Architecture")
+    st.markdown("---")
+    st.markdown("### System Architecture & Pipeline Flow")
     st.code("""
-    [ Raw EMR Scheduling Log ] 
-              │
-              ▼
-    [ Cleaning & Point-in-Time Historical Engine ] (Purges anomalies, calculates past no-show rates strictly prior to t_pred)
-              │
-              ▼
-    [ Feature Availability & Leakage Guard ] (Drops SMS_received, drops clinical diagnosis codes)
-              │
-              ▼
-    [ Scikit-Learn Preprocessing & Pipeline ] (StandardScaler + OneHotEncoder)
-              │
-              ▼
-    [ Champion Classifier: HistGradientBoosting ] (Calibrated risk probability: p_hat in [0, 1])
-              │
-              ├─────────────────────────────┬─────────────────────────────┐
-              ▼                             ▼                             ▼
-    [ FastAPI Backend ]        [ Operations Simulator ]      [ Threshold Studio ]
-    (/predict & /batch)        (Capacity-constrained review)  (Workload trade-off)
+    [ Raw EMR Scheduling Log (110k Records) ]
+                    │
+                    ▼
+    [ Cleaning & Point-in-Time Historical Engine ]
+      • Purges negative lead times & invalid records
+      • Calculates past patient attendance strictly prior to booking time (t < t_pred)
+                    │
+                    ▼
+    [ Feature Availability & Leakage Guard ]
+      • Purges SMS_received (temporal data leakage & Simpson's Paradox confounder)
+      • Purges sensitive clinical diagnoses (Hypertension, Diabetes, Alcoholism, Handicap)
+                    │
+                    ▼
+    [ Scikit-Learn Pipeline ] (StandardScaler + OneHotEncoder)
+                    │
+                    ▼
+    [ Champion Classifier: HistGradientBoosting ] -> Calibrated risk probability: p_hat in [0, 1]
+                    │
+       ┌────────────┴────────────┬─────────────────────────────┐
+       ▼                         ▼                             ▼
+    [ FastAPI Backend ]   [ Operations Simulator ]      [ Threshold Studio ]
+    (/predict & /batch)   (Capacity-constrained review) (Workload & cost trade-off)
     """, language="text")
 
 # =============================================================================
@@ -147,27 +168,90 @@ if menu == "1. Executive Overview & Governance":
 elif menu == "2. EDA & Feature Leakage Audit":
     st.title("📊 Exploratory Data Analysis & Leakage Audit")
     
-    tab1, tab2, tab3 = st.tabs(["Operational Patterns & Findings", "Simpson's Paradox on SMS", "Feature Availability Table"])
+    tab1, tab2, tab3 = st.tabs(["Interactive Operational Patterns", "Simpson's Paradox on SMS", "Feature Availability Table"])
     
     with tab1:
         st.markdown("### Empirical Discoveries in Historical Appointment Data")
+        
         c1, c2 = st.columns(2)
-        target_fig_path = os.path.join(FIGURES_DIR, "target_distribution.png")
-        if os.path.exists(target_fig_path):
-            c1.image(target_fig_path, caption="Target Distribution (Chronological Training Set)")
+        with c1:
+            # Interactive Target Distribution
+            counts = df_train['target'].value_counts()
+            fig_target = px.bar(
+                x=['Attended (0)', 'No-Show (1)'],
+                y=[int(counts.get(0, 0)), int(counts.get(1, 0))],
+                color=['Attended (0)', 'No-Show (1)'],
+                color_discrete_map={'Attended (0)': '#2b5c8f', 'No-Show (1)': '#d9534f'},
+                labels={'x': 'Appointment Outcome', 'y': 'Count'},
+                title="Target Class Distribution (Training Cohort)",
+                text_auto=',d'
+            )
+            fig_target.update_layout(showlegend=False)
+            st.plotly_chart(fig_target, use_container_width=True)
             
-        lead_fig_path = os.path.join(FIGURES_DIR, "lead_time_vs_noshow.png")
-        if os.path.exists(lead_fig_path):
-            c2.image(lead_fig_path, caption="Lead Time Horizon vs. No-Show Rate")
+        with c2:
+            # Interactive Lead Time Binned
+            bins = [-1, 0, 2, 7, 14, 30, 60, 180]
+            labels = ['Same Day (0d)', '1-2d', '3-7d (1w)', '8-14d (2w)', '15-30d (1m)', '31-60d (2m)', '60d+']
+            df_train['lead_bin'] = pd.cut(df_train['lead_days'], bins=bins, labels=labels)
+            lead_grp = df_train.groupby('lead_bin', observed=False)['target'].agg(['count', 'mean']).reset_index()
+            lead_grp['no_show_pct'] = (lead_grp['mean'] * 100).round(1)
+            
+            fig_lead = go.Figure()
+            fig_lead.add_trace(go.Bar(
+                x=lead_grp['lead_bin'].astype(str),
+                y=lead_grp['count'],
+                name='Appointments Volume',
+                marker_color='#a6c8e0',
+                yaxis='y'
+            ))
+            fig_lead.add_trace(go.Scatter(
+                x=lead_grp['lead_bin'].astype(str),
+                y=lead_grp['no_show_pct'],
+                name='No-Show Rate (%)',
+                marker=dict(color='#d9534f', size=8),
+                line=dict(color='#d9534f', width=2.5),
+                yaxis='y2'
+            ))
+            fig_lead.update_layout(
+                title="No-Show Rate & Volume by Lead Time Horizon",
+                xaxis=dict(title='Lead Time Horizon'),
+                yaxis=dict(title='Appointment Volume', side='left'),
+                yaxis2=dict(title='No-Show Rate (%)', side='right', overlaying='y', range=[0, 45]),
+                legend=dict(x=0.01, y=0.99)
+            )
+            st.plotly_chart(fig_lead, use_container_width=True)
             
         c3, c4 = st.columns(2)
-        age_fig_path = os.path.join(FIGURES_DIR, "age_distribution.png")
-        if os.path.exists(age_fig_path):
-            c3.image(age_fig_path, caption="Patient Age Density by Appointment Attendance")
+        with c3:
+            # Age distribution
+            fig_age = px.histogram(
+                df_train,
+                x='Age',
+                color='target',
+                barmode='overlay',
+                nbins=30,
+                color_discrete_map={0: '#2b5c8f', 1: '#d9534f'},
+                title="Patient Age Distribution by Attendance (0 = Attended, 1 = Missed)",
+                opacity=0.6
+            )
+            st.plotly_chart(fig_age, use_container_width=True)
             
-        day_fig_path = os.path.join(FIGURES_DIR, "weekday_pattern.png")
-        if os.path.exists(day_fig_path):
-            c4.image(day_fig_path, caption="Appointment Attendance Across Weekdays")
+        with c4:
+            # Weekday distribution
+            day_map = {0: 'Mon', 1: 'Tue', 2: 'Wed', 3: 'Thu', 4: 'Fri', 5: 'Sat'}
+            df_train['weekday_name'] = df_train['appointment_weekday'].map(day_map)
+            day_grp = df_train.groupby('weekday_name', observed=False)['target'].mean().reindex(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']).dropna() * 100
+            
+            fig_day = px.bar(
+                x=day_grp.index,
+                y=day_grp.values.round(1),
+                labels={'x': 'Weekday', 'y': 'No-Show Rate (%)'},
+                title="No-Show Rate by Scheduled Appointment Day",
+                text_auto='.1f',
+                color_discrete_sequence=['#337ab7']
+            )
+            st.plotly_chart(fig_day, use_container_width=True)
             
     with tab2:
         st.markdown("### ⚠️ The Simpson's Paradox & Temporal Leakage Trap on `SMS_received`")
@@ -178,12 +262,21 @@ elif menu == "2. EDA & Feature Leakage Audit":
         )
         
         simpson_data = pd.DataFrame({
-            "Booking Type": ["Same-Day (Lead = 0 days)", "Advance (Lead > 0 days, No SMS)", "Advance (Lead > 0 days, SMS Sent)"],
-            "Appointments": [38563, 36482, 35482],
+            "Booking Cohort": [
+                "Same-Day Bookings (Lead = 0 days)",
+                "Advance Bookings without SMS (Lead > 0)",
+                "Advance Bookings with SMS Sent (Lead > 0)"
+            ],
+            "Total Appointments": [38563, 36482, 35482],
             "SMS Dispatched": ["0%", "0%", "100%"],
-            "Observed No-Show Rate": ["4.65%", "29.44%", "27.57%"]
+            "Observed No-Show Rate": ["4.65%", "29.44%", "27.57%"],
+            "Operational Consequence": [
+                "Immediate visit; no time for batch SMS; patients show up reliably.",
+                "Advance visit without reminder outreach.",
+                "Advance visit with reminder: slight protective reduction in misses."
+            ]
         })
-        st.table(simpson_data)
+        st.dataframe(simpson_data, use_container_width=True)
         st.caption("When evaluated correctly within advance bookings, SMS actually slightly decreases no-shows (29.4% -> 27.6%), but naive correlation across the whole dataset inverts this relationship completely.")
 
     with tab3:
@@ -204,41 +297,93 @@ elif menu == "3. Model Benchmarks & Calibration":
     """)
     
     if metrics and "test_model_comparison" in metrics:
-        comp_df = pd.DataFrame(metrics["test_model_comparison"]).T
-        st.dataframe(comp_df.style.highlight_max(subset=['roc_auc', 'pr_auc', 'f1_score'], color='#d4edda'), use_container_width=True)
+        raw_comp = metrics["test_model_comparison"]
         
-    c1, c2 = st.columns(2)
-    roc_pr_path = os.path.join(FIGURES_DIR, "roc_pr_curves.png")
-    if os.path.exists(roc_pr_path):
-        c1.image(roc_pr_path, caption="ROC Curves & Precision-Recall Curves (Validation Set)")
-        
-    cal_path = os.path.join(FIGURES_DIR, "calibration_curve.png")
-    if os.path.exists(cal_path):
-        c2.image(cal_path, caption="Reliability Diagram (Probability Calibration Curves)")
+        table_rows = []
+        for name, d in raw_comp.items():
+            cm = d.get("confusion_matrix", {})
+            table_rows.append({
+                "Model Architecture": name,
+                "Test ROC-AUC": f"{d.get('roc_auc', 0):.4f}",
+                "Test PR-AUC": f"{d.get('pr_auc', 0):.4f}",
+                "Precision": f"{d.get('precision', 0)*100:.1f}%",
+                "Recall": f"{d.get('recall', 0)*100:.1f}%",
+                "F1-Score": f"{d.get('f1_score', 0):.4f}",
+                "Brier Score": f"{d.get('brier_score', 0):.4f}",
+                "TP (Caught)": f"{cm.get('tp', 0):,}",
+                "FP (False Alert)": f"{cm.get('fp', 0):,}",
+                "TN (Attended)": f"{cm.get('tn', 0):,}",
+                "FN (Missed)": f"{cm.get('fn', 0):,}"
+            })
+            
+        display_df = pd.DataFrame(table_rows).set_index("Model Architecture")
+        st.dataframe(display_df, use_container_width=True)
         
     st.markdown("---")
-    st.markdown("### Final Untouched Test Confusion Matrix")
-    c3, c4 = st.columns([1, 1])
-    cm_path = os.path.join(FIGURES_DIR, "test_confusion_matrix.png")
-    if os.path.exists(cm_path):
-        c3.image(cm_path, caption="Test Confusion Matrix at Chosen Threshold tau = 0.43")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("#### Probability Reliability Diagram (Calibration Curve)")
+        cal_path = os.path.join(FIGURES_DIR, "calibration_curve.png")
+        if os.path.exists(cal_path):
+            st.image(cal_path, use_container_width=True, caption="Reliability Diagram: HistGradientBoosting exhibits superior calibration.")
+            
+    with c2:
+        st.markdown("#### Discrimination Curves (ROC & Precision-Recall)")
+        roc_pr_path = os.path.join(FIGURES_DIR, "roc_pr_curves.png")
+        if os.path.exists(roc_pr_path):
+            st.image(roc_pr_path, use_container_width=True, caption="PR Curves: HistGradientBoosting achieves a 2.85x lift over the baseline rate.")
+            
+    st.markdown("---")
+    st.markdown("### Interactive Model Confusion Matrix Inspection")
+    selected_eval_model = st.selectbox(
+        "Select Model to Inspect Confusion Matrix on Untouched Test Set:",
+        list(models.keys())
+    )
+    
+    # Compute live confusion matrix for the chosen model on the test set
+    if not df_test.empty:
+        model_obj = models[selected_eval_model]
+        test_probs = model_obj.predict_proba(df_test[ALL_MODEL_FEATURES])[:, 1]
+        test_preds = (test_probs >= 0.43).astype(int)
         
-    with c4:
-        st.markdown("""
-        **Operational Error Interpretation:**
-        * **False Positive (FP):** Staff calls a patient who would have attended anyway.
-          * *Consequence:* ~$5 of administrative call time spent. Patient receives helpful reminder.
-        * **False Negative (FN):** Model fails to flag an appointment that ends up being missed.
-          * *Consequence:* ~$100 clinic slot cost lost; physician and examination room sit idle.
-        * **Conclusion:** Because $C_{\\text{FN}} \\gg C_{\\text{FP}}$, the optimal operational threshold must be tuned toward higher Recall rather than high Precision!
-        """)
+        from sklearn.metrics import confusion_matrix as sk_cm, classification_report
+        y_test_true = df_test['target'].values
+        cm_arr = sk_cm(y_test_true, test_preds)
+        
+        c_hm, c_rep = st.columns([1, 1])
+        with c_hm:
+            fig_cm_model = px.imshow(
+                cm_arr,
+                labels=dict(x="Predicted Attendance", y="Actual Attendance", color="Count"),
+                x=['Attended (0)', 'No-Show (1)'],
+                y=['Attended (0)', 'No-Show (1)'],
+                text_auto=',d',
+                color_continuous_scale='Blues',
+                title=f"Confusion Matrix: {selected_eval_model} (tau = 0.43)"
+            )
+            st.plotly_chart(fig_cm_model, use_container_width=True)
+            
+        with c_rep:
+            st.markdown(f"#### Classification Metrics ({selected_eval_model})")
+            tn, fp, fn, tp = cm_arr.ravel()
+            p_val = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+            r_val = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+            f1_val = 2 * p_val * r_val / (p_val + r_val) if (p_val + r_val) > 0 else 0.0
+            
+            st.metric("Recall (Sensitivity)", f"{r_val*100:.1f}%", "Proportion of no-shows caught")
+            st.metric("Precision (Positive Predictive Value)", f"{p_val*100:.1f}%", "Accuracy of flagged calls")
+            st.metric("F1-Score", f"{f1_val:.4f}", "Harmonic mean of Precision & Recall")
+            
+            st.caption(
+                f"**Clinical Asymmetry Note:** False Negatives ({fn:,} unannounced misses costing ~$100 each) are far more detrimental than False Positives ({fp:,} reminder calls costing ~$5 each)."
+            )
 
 # =============================================================================
 # MODULE 4: SINGLE APPOINTMENT PREDICTOR
 # =============================================================================
 elif menu == "4. Single Appointment Predictor":
     st.title("🔮 Single Appointment Risk Inference & Explainability")
-    st.markdown("Simulate an appointment booking transaction in real-time to obtain the calibrated no-show risk score and feature breakdown.")
+    st.markdown("Simulate an appointment booking transaction in real-time to obtain the calibrated no-show risk score, operational recommendation, and feature attribution waterfall.")
     
     with st.form("single_predict_form"):
         col1, col2, col3 = st.columns(3)
@@ -261,9 +406,14 @@ elif menu == "4. Single Appointment Predictor":
             scholarship = st.checkbox("Bolsa Família Welfare Enrollment (Scholarship)", value=False)
             prior_count = st.number_input("Prior Scheduled Appointments for Patient:", min_value=0, max_value=50, value=2)
             prior_noshows = st.number_input("Prior Missed Appointments (No-Shows):", min_value=0, max_value=prior_count, value=1)
-            neighbourhood = st.selectbox("Clinic Catchment District:", ["JARDIM DA PENHA", "JESUS DE NAZARETH", "MARIA ORTIZ", "CENTRO", "RESISTÊNCIA", "SANTO ANTÔNIO"])
+            neighbourhood = st.selectbox("Clinic District:", all_neighbourhoods, index=min(10, len(all_neighbourhoods)-1))
             
-        threshold_val = st.slider("Operational Alert Threshold (tau):", min_value=0.10, max_value=0.90, value=0.43, step=0.01)
+        c_sub1, c_sub2 = st.columns(2)
+        with c_sub1:
+            chosen_model_name = st.selectbox("Inference Model Architecture:", ["HistGradientBoosting (Champion)", "Logistic Regression", "Random Forest"])
+        with c_sub2:
+            threshold_val = st.slider("Operational Alert Threshold (tau):", min_value=0.10, max_value=0.90, value=0.43, step=0.01)
+            
         submit_btn = st.form_submit_button("Compute Appointment Risk", type="primary")
         
     if submit_btn:
@@ -302,7 +452,8 @@ elif menu == "4. Single Appointment Predictor":
             'is_repeat_patient': 1 if prior_count > 0 else 0
         }
         
-        explanation = explainer.explain_instance(record)
+        active_model = models.get(chosen_model_name, models['HistGradientBoosting (Champion)'])
+        explanation = explainer.explain_instance(record, custom_model=active_model)
         prob = explanation["predicted_risk_probability"]
         flagged = prob >= threshold_val
         
@@ -310,20 +461,38 @@ elif menu == "4. Single Appointment Predictor":
         res_col1, res_col2, res_col3 = st.columns(3)
         res_col1.metric("Predicted No-Show Risk", f"{prob*100:.1f}%", f"{'+' if flagged else '-'} Threshold: {threshold_val*100:.0f}%")
         res_col2.metric("Risk Classification Tier", explanation["risk_tier"])
-        res_col3.metric("Decision Flag", "FLAGGED FOR OUTREACH" if flagged else "ROUTINE APPOINTMENT")
+        res_col3.metric("Decision Flag", "🚨 FLAGGED FOR OUTREACH" if flagged else "✅ ROUTINE APPOINTMENT")
         
         if flagged:
             st.warning(f"**Recommended Action:** {explanation['recommended_operational_action']}")
         else:
             st.success(f"**Recommended Action:** {explanation['recommended_operational_action']}")
             
-        st.markdown("#### Local Feature Attribution Drivers")
-        for d in explanation["top_drivers"]:
-            icon = "🔺" if d["direction"] == "increases_risk" else "🔻"
-            color = "#fff3cd" if d["direction"] == "increases_risk" else "#d4edda"
-            st.markdown(f"> {icon} **{d['factor']}** — *{d['impact']}*")
+        st.markdown("---")
+        c_exp1, c_exp2 = st.columns([1, 1])
+        with c_exp1:
+            st.markdown("#### Local Feature Attribution Drivers")
+            for d in explanation["top_drivers"]:
+                icon = "🔺" if d["direction"] == "increases_risk" else "🔻"
+                st.markdown(f"> {icon} **{d['factor']}** — *{d['impact']}*")
+            st.caption(explanation["disclaimer"])
             
-        st.caption(explanation["disclaimer"])
+        with c_exp2:
+            st.markdown("#### Feature Risk Impact Breakdown")
+            chart_data = explanation.get("chart_contributions", [])
+            if chart_data:
+                chart_df = pd.DataFrame(chart_data)
+                fig_waterfall = px.bar(
+                    chart_df,
+                    x='Impact',
+                    y='Feature',
+                    orientation='h',
+                    color='Direction',
+                    color_discrete_map={'Increases Risk': '#d9534f', 'Decreases Risk': '#5cb85c', 'Neutral': '#a6c8e0'},
+                    title="Directional Feature Risk Contributions"
+                )
+                fig_waterfall.update_layout(yaxis=dict(autorange="reversed"))
+                st.plotly_chart(fig_waterfall, use_container_width=True)
 
 # =============================================================================
 # MODULE 5: SIGNATURE FEATURE 1 - OPERATIONS SIMULATOR
@@ -332,43 +501,125 @@ elif menu == "5. Operations Simulator (Signature)":
     st.title("⚙️ Signature Feature 1: Appointment Operations Simulator")
     st.markdown("""
     **Simulate real-world clinic workflows under constrained administrative capacity.**
-    Hospitals cannot call every patient. Staff coordinators have limited outbound calling hours.
-    This component ranks scheduled appointments by risk, flags the top $K$ appointments matching your daily staff capacity, and evaluates captured no-shows and operational lift.
+    Clinics cannot call every patient. Staff coordinators have limited outbound calling hours.
+    This component ranks scheduled appointments by risk, flags the top $K$ appointments matching your daily staff capacity, and evaluates captured no-shows and operational lift against actual ground-truth outcomes.
     """)
     
-    df_sample = load_sample_test_batch(200)
+    st.markdown("#### Step 1: Select Appointment Schedule Batch")
+    batch_mode = st.radio(
+        "Choose Schedule Source:",
+        ["Real Clinic Schedule by Date", "Sample Size from Untouched Test Set", "Upload Custom Schedule CSV"],
+        horizontal=True
+    )
     
-    c1, c2 = st.columns([1, 2])
-    with c1:
-        st.markdown("#### Staff Capacity Settings")
-        daily_capacity = st.slider("Daily Staff Call Capacity (K):", min_value=10, max_value=100, value=40, step=5)
-        cost_noshow = st.number_input("Lost Revenue per Empty Slot ($):", min_value=20.0, max_value=500.0, value=100.0)
-        cost_call = st.number_input("Cost per Outbound Review Call ($):", min_value=1.0, max_value=50.0, value=5.0)
-        phone_recovery = st.slider("Assumed Phone Call Attendance Recovery Rate (%):", min_value=10, max_value=60, value=30)
-        
-    with c2:
-        if not df_sample.empty:
-            sim_res = simulator.simulate_batch(
-                df_sample,
-                daily_capacity=daily_capacity,
-                cost_per_noshow=cost_noshow,
-                cost_per_call=cost_call
-            )
-            m = sim_res["metrics"]
-            
-            st.markdown("#### Operational Simulation Outcomes (Batch of 200 Appointments)")
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Appointments Reviewed", f"{m['appointments_reviewed']} / {m['total_appointments']}", f"{m['review_coverage_pct']}% of schedule")
-            m2.metric("No-Shows Captured in Top K", f"{m['captured_noshows_in_top_k']} / {m['total_actual_noshows']}", f"{m['capture_rate_pct']}% capture rate")
-            m3.metric("Precision in Top K", f"{m['precision_in_top_k_pct']}%", f"{m['lift_over_random']}x Lift Over Random")
-            
-            st.success(f"**Net Projected Daily Cost Savings:** ${m['estimated_net_savings_usd']:,.2f} (Accounting for staff call labor and recovered clinic slots)")
+    sim_batch = pd.DataFrame()
+    if batch_mode == "Real Clinic Schedule by Date":
+        if not df_test.empty:
+            dates = sorted(df_test['AppointmentDay'].unique())
+            clean_dates = [d.split('T')[0] for d in dates]
+            date_choice = st.selectbox("Select Clinic Appointment Date:", clean_dates, index=len(clean_dates)-1)
+            full_date_str = [d for d in dates if d.startswith(date_choice)][0]
+            sim_batch = df_test[df_test['AppointmentDay'] == full_date_str].copy()
+            st.caption(f"Loaded **{len(sim_batch):,} scheduled appointments** for {date_choice}.")
+    elif batch_mode == "Sample Size from Untouched Test Set":
+        sample_size = st.slider("Number of Appointments in Daily Schedule:", 50, 1000, 250, step=50)
+        sim_batch = df_test.sample(n=min(sample_size, len(df_test)), random_state=42).copy()
+    else:
+        uploaded_file = st.file_uploader("Upload CSV containing appointments with PULSE features:", type=['csv'])
+        if uploaded_file is not None:
+            sim_batch = pd.read_csv(uploaded_file)
+            st.success(f"Uploaded {len(sim_batch):,} custom records.")
+        else:
+            sim_batch = df_test.head(200).copy()
+            st.info("Using default 200 appointment test cohort until CSV upload.")
             
     st.markdown("---")
-    st.markdown("### Top Prioritized Appointments for Human Review")
-    if not df_sample.empty:
-        display_cols = ['rank', 'predicted_risk', 'risk_tier', 'lead_days', 'Age', 'prior_appointments_count', 'prior_no_shows_count', 'recommended_action']
-        st.dataframe(sim_res["selected_records"][display_cols].style.format({'predicted_risk': '{:.1%}'}), use_container_width=True)
+    st.markdown("#### Step 2: Configure Operational Constraints & Economics")
+    c_set1, c_set2, c_set3, c_set4 = st.columns(4)
+    with c_set1:
+        daily_capacity = st.slider("Daily Staff Call Quota (K):", 10, min(500, len(sim_batch)), min(50, len(sim_batch)), step=5)
+    with c_set2:
+        cost_noshow = st.number_input("Lost Revenue per Empty Slot ($):", value=100.0)
+    with c_set3:
+        cost_call = st.number_input("Labor Cost per Phone Call ($):", value=5.0)
+    with c_set4:
+        recovery_rate = st.slider("Assumed Call Recovery Rate (%):", 10, 60, 30) / 100.0
+        
+    if not sim_batch.empty:
+        sim_res = simulator.simulate_batch(
+            sim_batch,
+            daily_capacity=daily_capacity,
+            cost_per_noshow=cost_noshow,
+            cost_per_call=cost_call,
+            phone_recovery_rate=recovery_rate
+        )
+        m = sim_res["metrics"]
+        
+        st.markdown("---")
+        st.markdown("#### Step 3: Simulation Results & Operational Impact")
+        
+        kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+        kpi1.metric("Schedule Reviewed", f"{m['appointments_reviewed']} / {m['total_appointments']}", f"{m['review_coverage_pct']}% of schedule")
+        kpi2.metric("Captured No-Shows (TP)", f"{m['captured_noshows_in_top_k']} / {m['total_actual_noshows']}", f"{m['capture_rate_pct']}% capture rate")
+        kpi3.metric("Precision in Top K", f"{m['precision_in_top_k_pct']}%", f"{m['lift_over_random']}x Lift Over Random")
+        kpi4.metric("Net Financial Savings", f"${m['estimated_net_savings_usd']:,.2f}", f"Labor: -${m['labor_cost_usd']:,.0f}")
+        
+        c_don, c_lift = st.columns(2)
+        with c_don:
+            # Donut chart of operational outcomes
+            donut_labels = ['🎯 Captured No-Shows (TP)', '⚠️ Contacted Attendees (FP)', '❌ Uncontacted No-Shows (FN)', '✅ Uncontacted Attendees (TN)']
+            donut_values = [
+                m['captured_noshows_in_top_k'],
+                m['contacted_attendees'],
+                m['uncontacted_noshows_outside_k'],
+                m['uncontacted_attendees']
+            ]
+            fig_donut = px.pie(
+                names=donut_labels,
+                values=donut_values,
+                hole=0.45,
+                color=donut_labels,
+                color_discrete_map={
+                    '🎯 Captured No-Shows (TP)': '#2b5c8f',
+                    '⚠️ Contacted Attendees (FP)': '#f0ad4e',
+                    '❌ Uncontacted No-Shows (FN)': '#d9534f',
+                    '✅ Uncontacted Attendees (TN)': '#5cb85c'
+                },
+                title="Review Quota Outcome Breakdown"
+            )
+            st.plotly_chart(fig_donut, use_container_width=True)
+            
+        with c_lift:
+            # Lift bar chart comparing model review vs random review
+            lift_df = pd.DataFrame({
+                "Strategy": ["Random Calling (Baseline)", "PULSE Risk-Ranked Calling"],
+                "Capture Precision (%)": [m['base_noshow_rate_pct'], m['precision_in_top_k_pct']]
+            })
+            fig_lift = px.bar(
+                lift_df,
+                x='Strategy',
+                y='Capture Precision (%)',
+                color='Strategy',
+                color_discrete_map={'Random Calling (Baseline)': '#a6c8e0', 'PULSE Risk-Ranked Calling': '#2b5c8f'},
+                text_auto='.1f',
+                title=f"Efficiency Gain: {m['lift_over_random']}x Lift Over Random Review"
+            )
+            fig_lift.update_layout(showlegend=False)
+            st.plotly_chart(fig_lift, use_container_width=True)
+            
+        st.markdown("---")
+        st.markdown("#### Top Prioritized Appointments for Human Telephone Outreach")
+        display_df = sim_res["selected_records"].copy()
+        display_cols = [
+            'rank', 'predicted_risk', 'risk_tier', 'lead_days', 'Age',
+            'prior_appointments_count', 'prior_no_shows_count',
+            'actual_status', 'review_outcome', 'recommended_action'
+        ]
+        available_cols = [c for c in display_cols if c in display_df.columns]
+        st.dataframe(
+            display_df[available_cols].style.format({'predicted_risk': '{:.1%}'}),
+            use_container_width=True
+        )
 
 # =============================================================================
 # MODULE 6: SIGNATURE FEATURE 2 - THRESHOLD TRADE-OFF STUDIO
@@ -376,30 +627,42 @@ elif menu == "5. Operations Simulator (Signature)":
 elif menu == "6. Threshold Trade-off Studio (Signature)":
     st.title("🎚️ Signature Feature 2: Threshold Trade-off Studio")
     st.markdown("""
-    Explore how changing the probability classification threshold $\\tau$ alters the operational trade-off between **identifying missed appointments (Recall)** and **wasting administrative outreach on patients who would show up anyway (Precision & Workload)**.
+    Explore how changing the probability decision threshold $\\tau$ alters the operational trade-off between **identifying missed appointments (Recall)** and **wasting administrative outreach on patients who would show up anyway (Precision & Workload)**.
     """)
     
-    col_ctrl, col_stats = st.columns([1, 2])
-    with col_ctrl:
+    st.markdown("#### Quick-Action Operational Policy Presets")
+    col_p1, col_p2, col_p3 = st.columns(3)
+    preset_tau = 0.43
+    if col_p1.button("🎯 F1-Optimal (tau = 0.43)", use_container_width=True):
+        preset_tau = 0.43
+    if col_p2.button("📞 High Outreach / High Recall (tau = 0.25)", use_container_width=True):
+        preset_tau = 0.25
+    if col_p3.button("⚡ High Precision / Low Capacity (tau = 0.65)", use_container_width=True):
+        preset_tau = 0.65
+        
+    c_ctrl, c_metrics = st.columns([1, 2])
+    with c_ctrl:
         dataset_choice = st.radio("Evaluation Split:", ["validation", "test"], index=0)
-        tau = st.slider("Select Probability Threshold (tau):", min_value=0.05, max_value=0.95, value=0.43, step=0.01)
+        tau = st.slider("Select Probability Threshold (tau):", min_value=0.05, max_value=0.95, value=preset_tau, step=0.01)
         cost_slot = st.number_input("Slot Cost ($):", value=100.0)
         cost_labor = st.number_input("Outreach Labor ($):", value=5.0)
         
     res_thresh = studio.evaluate_threshold(tau, dataset=dataset_choice, cost_fn=cost_slot, cost_fp=cost_labor)
     
-    with col_stats:
-        st.markdown(f"#### Performance at tau = {tau:.2f} ({dataset_choice.capitalize()} Split)")
+    with c_metrics:
+        st.markdown(f"#### Performance at tau = {tau:.2f} ({dataset_choice.capitalize()} Cohort)")
         b1, b2, b3, b4 = st.columns(4)
         b1.metric("Precision", f"{res_thresh['precision']*100:.1f}%")
         b2.metric("Recall", f"{res_thresh['recall']*100:.1f}%")
-        b3.metric("F1-Score", f"{res_thresh['f1_score']:.3f}")
+        b3.metric("F1-Score", f"{res_thresh['f1_score']:.4f}")
         b4.metric("Flagged Volume", f"{res_thresh['flagged_percent']}%", f"{res_thresh['flagged_for_review']:,} calls")
         
-        st.info(f"**Trade-off Diagnosis:** {res_thresh['tradeoff_summary']}")
+        st.info(f"**Trade-off Policy Diagnosis:** {res_thresh['tradeoff_summary']}")
+        st.success(f"**Net Projected Cost Savings:** ${res_thresh['net_cost_savings']:,.2f} over doing no reminders.")
         
-    c_cm, c_cost = st.columns(2)
-    with c_cm:
+    st.markdown("---")
+    c_cm_plot, c_curves = st.columns(2)
+    with c_cm_plot:
         cm_data = res_thresh["confusion_matrix"]
         cm_matrix = np.array([[cm_data["tn"], cm_data["fp"]], [cm_data["fn"], cm_data["tp"]]])
         fig_cm = px.imshow(
@@ -407,17 +670,27 @@ elif menu == "6. Threshold Trade-off Studio (Signature)":
             labels=dict(x="Predicted Attendance", y="Actual Attendance", color="Count"),
             x=['Attended (0)', 'No-Show (1)'],
             y=['Attended (0)', 'No-Show (1)'],
-            text_auto=True,
+            text_auto=',d',
             color_continuous_scale='Blues',
             title=f"Confusion Matrix (tau = {tau:.2f})"
         )
         st.plotly_chart(fig_cm, use_container_width=True)
         
-    with c_cost:
-        st.markdown("#### Continuous Trade-off Curves")
-        tradeoff_curve_path = os.path.join(FIGURES_DIR, "threshold_tradeoff.png")
-        if os.path.exists(tradeoff_curve_path):
-            st.image(tradeoff_curve_path, caption="Precision, Recall, Workload, and Cost vs. Threshold")
+    with c_curves:
+        # Generate live tradeoff curve
+        tradeoff_df = studio.generate_tradeoff_curve(dataset=dataset_choice, steps=40)
+        fig_trade = go.Figure()
+        fig_trade.add_trace(go.Scatter(x=tradeoff_df['threshold'], y=tradeoff_df['precision'], mode='lines', name='Precision', line=dict(color='#2b5c8f', width=2)))
+        fig_trade.add_trace(go.Scatter(x=tradeoff_df['threshold'], y=tradeoff_df['recall'], mode='lines', name='Recall', line=dict(color='#d9534f', width=2)))
+        fig_trade.add_trace(go.Scatter(x=tradeoff_df['threshold'], y=tradeoff_df['f1_score'], mode='lines', name='F1-Score', line=dict(color='#5cb85c', width=2.5)))
+        fig_trade.add_vline(x=tau, line=dict(color='purple', dash='dash'), annotation_text=f"Selected tau={tau:.2f}")
+        fig_trade.update_layout(
+            title="Precision, Recall & F1 vs. Operating Threshold",
+            xaxis=dict(title="Probability Threshold (tau)"),
+            yaxis=dict(title="Score", range=[0, 1]),
+            legend=dict(x=0.01, y=0.05)
+        )
+        st.plotly_chart(fig_trade, use_container_width=True)
 
 # =============================================================================
 # MODULE 7: SAFETY & RESPONSIBLE AI GUIDELINES
