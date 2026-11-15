@@ -191,25 +191,3 @@ streamlit run app/main.py
 ```
 * Access the 7-module clinical operations platform at http://localhost:8501.
 
----
-
-## 7. Assessment Verification Checklist
-
-- [x] Verified public de-identified dataset (110k records, Vitória, Brazil).
-- [x] Clear booking-time prediction point ($t_{\text{pred}} = \text{ScheduledDay}$).
-- [x] Comprehensive feature availability & leakage audit table (`reports/feature_leakage_audit.md`).
-- [x] Excluded post-booking `SMS_received` and sensitive clinical variables (`Hipertension`, `Diabetes`, etc.).
-- [x] Point-in-time cumulative historical features ($t < t_{\text{pred}}$).
-- [x] Baseline (`DummyClassifier`) + 3 classifiers (Logistic, Random Forest, HistGradientBoosting).
-- [x] Class imbalance handled via cost-sensitive weighting (`class_weight='balanced'`).
-- [x] Chronological train/val/test split (no random shuffling or validation resampling).
-- [x] Precision, Recall, F1, ROC-AUC, PR-AUC, and Confusion Matrix reported.
-- [x] Reliability diagram (calibration curves) and Brier scores calculated.
-- [x] **Signature Feature 1:** Working Appointment Operations Simulator with real model outputs.
-- [x] **Signature Feature 2:** Working Threshold Trade-off Studio with interactive workload analysis.
-- [x] Dual-level explainability (global coefficients + local instance waterfall drivers).
-- [x] Production FastAPI service with Pydantic validation schemas.
-- [x] Professional multi-module Streamlit dashboard.
-- [x] 19 automated Pytest unit and integration tests passing (100% pass rate).
-- [x] Complete technical report (`reports/technical_report.md`) covering all 21 prompt requirements.
-- [x] Live interview defense and debugging preparation guide (`reports/demo_walkthrough_and_interview_prep.md`).
