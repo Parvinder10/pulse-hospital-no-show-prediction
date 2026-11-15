@@ -88,10 +88,8 @@ pulse-hospital-no-show-prediction/
 │   ├── hgb_model.joblib
 │   ├── model_metadata.json
 │   └── evaluation_metrics.json
-├── reports/                  # Detailed markdown audits, technical reports & figures
+├── reports/                  # Detailed markdown audits, EDA summary & figures
 │   ├── feature_leakage_audit.md
-│   ├── technical_report.md
-│   ├── demo_walkthrough_and_interview_prep.md
 │   ├── eda_summary.md
 │   └── figures/
 └── tests/                    # Pytest test suites (19 automated unit/integration tests)
