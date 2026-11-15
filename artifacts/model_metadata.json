@@ -1,0 +1,63 @@
+{
+  "project": "PULSE - Hospital Appointment No-Show Prediction",
+  "training_timestamp": "2026-11-15T13:05:04.760390Z",
+  "train_samples": 77364,
+  "val_samples": 16578,
+  "train_target_rate": 0.23204591282767179,
+  "val_target_rate": 0.15532633610809507,
+  "features": [
+    "lead_days",
+    "lead_weeks",
+    "booking_hour",
+    "booking_weekday",
+    "booking_month",
+    "appointment_weekday",
+    "appointment_month",
+    "Age",
+    "prior_appointments_count",
+    "prior_no_shows_count",
+    "prior_no_show_rate",
+    "is_same_day",
+    "gender_female",
+    "Scholarship",
+    "is_repeat_patient",
+    "age_group",
+    "neighbourhood"
+  ],
+  "feature_count": 17,
+  "champion_model": "logistic",
+  "model_comparison": {
+    "dummy": {
+      "model_type": "dummy",
+      "filename": "baseline_model.joblib",
+      "roc_auc": 0.5,
+      "pr_auc": 0.1553,
+      "brier_score": 0.1371,
+      "log_loss": 0.4499
+    },
+    "logistic": {
+      "model_type": "logistic",
+      "filename": "logistic_model.joblib",
+      "roc_auc": 0.7522,
+      "pr_auc": 0.3269,
+      "brier_score": 0.1715,
+      "log_loss": 0.5063
+    },
+    "random_forest": {
+      "model_type": "random_forest",
+      "filename": "rf_model.joblib",
+      "roc_auc": 0.7569,
+      "pr_auc": 0.3176,
+      "brier_score": 0.1687,
+      "log_loss": 0.4988
+    },
+    "hist_gradient_boosting": {
+      "model_type": "hist_gradient_boosting",
+      "filename": "hgb_model.joblib",
+      "roc_auc": 0.7532,
+      "pr_auc": 0.3195,
+      "brier_score": 0.1655,
+      "log_loss": 0.489
+    }
+  }
+}
