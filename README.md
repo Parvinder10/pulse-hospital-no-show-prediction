@@ -9,7 +9,7 @@
 
 > **Project Identity:** PULSE – Predict risk. Plan responsibly.  
 > **Candidate Assessment:** AI & Machine Learning Internship Assessment | ALGIONS AI LABS PRIVATE LIMITED  
-> **Dashboard Link:** [http://127.0.0.1:8501](http://127.0.0.1:8501)
+> **Live Interactive Dashboard:** [https://pulse-hospital-no-show-prediction.streamlit.app](https://pulse-hospital-no-show-prediction.streamlit.app)
 
 ---
 
@@ -188,5 +188,6 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8000/predict" -Method Post -ContentType
 ```powershell
 streamlit run app/main.py
 ```
-* Access the 7-module clinical operations platform at [http://127.0.0.1:8501](http://127.0.0.1:8501) (or http://localhost:8501).
+* **Live Cloud Deployment:** [https://pulse-hospital-no-show-prediction.streamlit.app](https://pulse-hospital-no-show-prediction.streamlit.app)
+* **Local Run:** [http://127.0.0.1:8501](http://127.0.0.1:8501) (or `http://localhost:8501`).
 
