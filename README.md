@@ -8,7 +8,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 > **Project Identity:** PULSE – Predict risk. Plan responsibly.  
-> **Candidate Assessment:** AI & Machine Learning Internship Assessment | ALGIONS AI LABS PRIVATE LIMITED
+> **Candidate Assessment:** AI & Machine Learning Internship Assessment | ALGIONS AI LABS PRIVATE LIMITED  
+> **Dashboard Link:** [http://127.0.0.1:8501](http://127.0.0.1:8501)
 
 ---
 
@@ -187,5 +188,5 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8000/predict" -Method Post -ContentType
 ```powershell
 streamlit run app/main.py
 ```
-* Access the 7-module clinical operations platform at http://localhost:8501.
+* Access the 7-module clinical operations platform at [http://127.0.0.1:8501](http://127.0.0.1:8501) (or http://localhost:8501).
 
